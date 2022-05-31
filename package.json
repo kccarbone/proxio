@@ -1,0 +1,18 @@
+{
+  "name": "proxio",
+  "version": "1.0.0",
+  "description": "A simple reverse-proxy utility for testing domains locally.",
+  "author": "Kyle Carbone",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kccarbone/proxio.git"
+  },
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "chalk": "^4.1.2",
+    "inquirer": "^8.2.4"
+  }
+}

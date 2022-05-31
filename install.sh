@@ -5,7 +5,7 @@ printf '\033[44;97m[ Proxio Setup ]\033[0m\n'
 if [ "$1" == '' ]
 then 
   printf '\033[0;36m\nDownloading proxio\033[0m\n'
-  git clone git@github.com:kccarbone/proxio.git
+  GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=accept-new" git clone git@github.com:kccarbone/proxio.git
   cd proxio
 fi
 
@@ -39,7 +39,28 @@ if ! type nginx > /dev/null 2>&1;
 then
   sudo apt install -y nginx
 fi
-printf "$(nginx -v)\n"
+printf "$(nginx -v)"
+
+## Acme.sh
+printf '\033[0;36m\nChecking acme.sh\033[0m\n'
+if sudo [ -f "/etc/acme/acme.sh" ] 
+then
+  printf 'acme.sh already installed\n'
+else
+  mkdir -p /etc/acme
+  curl https://raw.githubusercontent.com/acmesh-official/acme.sh/master/acme.sh | sudo sh -s -- --install-online --no-profile --home /etc/acme
+fi
+
+## Proxio
+printf '\033[0;36m\nInstalling app\033[0m\n'
+if [ -d "node_modules" ] 
+then
+  printf 'App already installed\n'
+else
+  npm install
+fi
+
+printf '\033[0;32m\nDone!\033[0m Run \033[0;95mproxio\033[0m to get started\n'
 
 if [ "$1" == '' ]
 then 
