@@ -38,17 +38,17 @@ printf '\033[0;36m\nChecking Nginx\033[0m\n'
 if ! type nginx > /dev/null 2>&1; 
 then
   sudo apt install -y nginx
+  sudo rm -rf /etc/nginx/sites-enabled/*
 fi
 printf "$(nginx -v)"
 
 ## Acme.sh
 printf '\033[0;36m\nChecking acme.sh\033[0m\n'
-if sudo [ -f "/etc/acme/acme.sh" ] 
+if sudo [ -f "/root/.acme.sh/acme.sh" ] 
 then
   printf 'acme.sh already installed\n'
 else
-  mkdir -p /etc/acme
-  curl https://raw.githubusercontent.com/acmesh-official/acme.sh/master/acme.sh | sudo sh -s -- --install-online --no-profile --home /etc/acme
+  curl https://raw.githubusercontent.com/acmesh-official/acme.sh/master/acme.sh | sudo sh -s -- --install-online --no-profile --no-cron
 fi
 
 ## Proxio
@@ -60,7 +60,14 @@ else
   npm install
 fi
 
-printf '\033[0;32m\nDone!\033[0m Run \033[0;95mproxio\033[0m to get started\n'
+## Add alias
+if ! sudo grep -q '^alias proxio.*' ~/.bash_profile
+then 
+  echo "alias proxio=\"sudo node $(pwd)/index.js\"" >> ~/.bash_profile
+  source ~/.bash_profile
+fi
+
+printf '\033[0;32m\nDone!\033[0m Run \033[0;95mproxio\033[0m to get started (after reload)\n'
 
 if [ "$1" == '' ]
 then 
