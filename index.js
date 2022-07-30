@@ -1,5 +1,6 @@
 const os = require('os');
 const fs = require('fs');
+const path = require('path');
 const proc = require('child_process');
 const rimraf = require('rimraf');
 const chalk = require('chalk');
@@ -7,29 +8,53 @@ const inquirer = require('inquirer');
 
 const nginxDir = '/etc/nginx/sites-enabled';
 const certsDir = '/etc/nginx/certs';
-const acmeDir = '/etc/acme';
-const acctDir = '/root/.acme.sh/ca';
+const acmeDir = '/root/.acme.sh';
+const localStateFile = path.resolve(__dirname, './localstate.json');
+let localState = {};
+const siteTemplateFile = path.resolve(__dirname, './site-template.txt');
+let siteTemplate = '';
+const sites = [];
+
+const failFatal = msg => {
+  console.log(`${chalk.red('#')} ${chalk.bold(msg)}`);
+  exit(1);
+};
+
+const saveState = () => fs.promises.writeFile(localStateFile, JSON.stringify(localState));
 
 async function run() {
   console.log(chalk.bgRed.white('### Proxio ###\n'));
-  const sites = await fs.promises.readdir(nginxDir);
 
+  // Load local state (if available)
+  if (fs.existsSync(localStateFile)) {
+    const config = await fs.promises.readFile(localStateFile, 'utf-8');
+    localState = JSON.parse(config);
+  }
+
+  // Load template for new sites
+  if (!fs.existsSync(siteTemplateFile)) {
+    failFatal(`Missing config file: ${siteTemplateFile}`);
+  }
+
+  siteTemplate = await fs.promises.readFile(siteTemplateFile, 'utf8');
+
+  // Create certs folder if needed
   if (!fs.existsSync(certsDir)) {
     await fs.promises.mkdir(certsDir);
   }
     
-  console.log(chalk.blueBright('Current sites:'));
-  for (const site of sites) {
-    await viewSite(site);
+  // Lookup all existing sites 
+  const configs = await fs.promises.readdir(nginxDir);
+  console.log(chalk.bold('Current sites:'));
+
+  for (const site of configs) {
+    const config = await fs.promises.readFile(`${nginxDir}/${site}`, 'utf-8');
+    const forwardTo = config.match(/proxy_pass (.+);/)[1];
+    console.log(`  ${site.replace('.conf', '')} ${chalk.blueBright('->')} ${forwardTo}`);
   }
 
+  // Main loop
   await mainMenu('What would you like to do?');
-}
-
-async function viewSite(site){
-  console.log(chalk.blueBright(site));
-  const config = await fs.promises.readFile(`${nginxDir}/${site}`, 'utf-8');
-  console.log(config);
 }
 
 async function mainMenu(message) {
@@ -47,8 +72,12 @@ async function mainMenu(message) {
     case 'Force renew': break;
     default: console.log('bye!'); process.exit(0);
   }
-
   return mainMenu('Anything else?');
+}
+
+async function reloadNginx() {
+  console.log(`${chalk.magenta('-')} ${chalk.bold('Reloading nginx...')}`);
+  return new Promise(r => proc.spawn('systemctl', ['restart', 'nginx']).on('close', r));
 }
 
 async function acmeCmd(args) {
@@ -58,7 +87,7 @@ async function acmeCmd(args) {
 }
 
 async function verifyAccount() {
-  if (!fs.existsSync(acctDir)) {
+  if (!fs.existsSync(`${acmeDir}/ca`)) {
     console.log(chalk.bold.gray('\n  Please provide ZeroSSL API creds:'));
     const creds = await inquirer.prompt([
       { name: 'eab-kid', type: 'input' },
@@ -70,9 +99,8 @@ async function verifyAccount() {
     console.log('');
     
     if (exitCode !== 0) {
-      await new Promise(r => rimraf(acctDir, r));
-      console.log(`${chalk.red('#')} ${chalk.bold('Something appears to have gone wrong :(')}`);
-      process.exit(1);
+      await new Promise(r => rimraf(`${acmeDir}/ca`, r));
+      failFatal('Something appears to have gone wrong :(');
     }
   }
 }
@@ -83,20 +111,33 @@ async function AddSite() {
   console.log(chalk.bold.gray('\n  New site'));
   const opts = await inquirer.prompt([
     { message: 'Domain name:', name: 'domain', type: 'input' },
-    { message: 'Cloudflare token:', name: 'cfToken', type: 'input' },
-    { message: 'Cloudflare account ID:', name: 'cfAcct', type: 'input' },
+    { message: 'Cloudflare token:', name: 'cfToken', type: 'input', default: localState.cfToken },
+    { message: 'Cloudflare account ID:', name: 'cfAcct', type: 'input', default: localState.cfAcct },
+    { message: 'Internal IP:', name: 'proxyIp', type: 'input' },
+    { message: 'Internal Port:', name: 'proxyPort', type: 'input' }
   ]);
 
   process.env['CF_Token'] = opts.cfToken;
   process.env['CF_Account_ID'] = opts.cfAcct;
+  localState.cfToken = opts.cfToken;
+  localState.cfAcct = opts.cfAcct;
   
   console.log(`${chalk.magenta('\n-')} ${chalk.bold('Registering site...')}`);
   const exitCode = await acmeCmd(`--force --issue --dns dns_cf --server zerossl -d ${opts.domain} --fullchainpath ${certsDir}/${opts.domain}.cer --keypath ${certsDir}/${opts.domain}.key`);
   console.log('');
     
   if (exitCode !== 0) {
-    console.log(`${chalk.red('#')} ${chalk.bold('Something appears to have gone wrong :(')}`);
+    failFatal('Something appears to have gone wrong :(');
   }
+
+  const siteEntry = siteTemplate
+    .replace(/@@DOMAIN/g, opts.domain)
+    .replace(/@@IP/g, opts.proxyIp)
+    .replace(/@@PORT/g, opts.proxyPort);
+
+  await fs.promises.writeFile(`${nginxDir}/${opts.domain}.conf`, siteEntry);
+  await reloadNginx();
+  await saveState();
 }
 
 if (os.userInfo().uid === 0) {
@@ -105,11 +146,11 @@ if (os.userInfo().uid === 0) {
       run();
     }
     else {
-      console.log(`${chalk.bgRed.white(' ERROR! ')} Acme.sh not found! Run ${chalk.magentaBright('/install.sh local')} first`);
+      console.log(`${chalk.bgRed.white(' ERROR! ')} Acme.sh not found! Run ${chalk.magentaBright('./install.sh local')} first`);
     }
   }
   else {
-    console.log(`${chalk.bgRed.white(' ERROR! ')} Nginx not found! Run ${chalk.magentaBright('/install.sh local')} first`);
+    console.log(`${chalk.bgRed.white(' ERROR! ')} Nginx not found! Run ${chalk.magentaBright('./install.sh local')} first`);
   }
 }
 else {
