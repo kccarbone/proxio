@@ -6,6 +6,7 @@ const rimraf = require('rimraf');
 const chalk = require('chalk');
 const inquirer = require('inquirer');
 
+const nodeDir = '/usr/bin';
 const nginxDir = '/etc/nginx/sites-enabled';
 const certsDir = '/etc/nginx/certs';
 const acmeDir = '/root/.acme.sh';
@@ -17,13 +18,20 @@ const sites = [];
 
 const failFatal = msg => {
   console.log(`${chalk.red('#')} ${chalk.bold(msg)}`);
-  exit(1);
+  process.exit(1);
 };
 
 const saveState = () => fs.promises.writeFile(localStateFile, JSON.stringify(localState));
 
 async function run() {
   console.log(chalk.bgRed.white('### Proxio ###\n'));
+
+  // Check for headless mode
+  if (process.argv.indexOf('--cron') >= 0) {
+    await acmeCmd(`--cron --home ${acmeDir}`);
+    await reloadNginx();
+    process.exit(0);
+  }
 
   // Load local state (if available)
   if (fs.existsSync(localStateFile)) {
@@ -42,15 +50,17 @@ async function run() {
   if (!fs.existsSync(certsDir)) {
     await fs.promises.mkdir(certsDir);
   }
-    
+
   // Lookup all existing sites 
   const configs = await fs.promises.readdir(nginxDir);
   console.log(chalk.bold('Current sites:'));
 
   for (const site of configs) {
+    const siteName = site.replace('.conf', '');
     const config = await fs.promises.readFile(`${nginxDir}/${site}`, 'utf-8');
     const forwardTo = config.match(/proxy_pass (.+);/)[1];
-    console.log(`  ${site.replace('.conf', '')} ${chalk.blueBright('->')} ${forwardTo}`);
+    console.log(`  ${siteName} ${chalk.blueBright('->')} ${forwardTo}`);
+    sites.push(siteName);
   }
 
   // Main loop
@@ -63,21 +73,22 @@ async function mainMenu(message) {
     message,
     name: 'action',
     type: 'list',
-    choices: ['Add site', 'Remove site', 'Force renew', 'Quit']
+    choices: ['Add site', 'Remove site', 'Enable CRON', 'Quit']
   });
-  
+
   switch (action) {
     case 'Add site': await AddSite(); break;
-    case 'Remove site': break;
-    case 'Force renew': break;
+    case 'Remove site': await RemoveSite(); break;
+    case 'Enable CRON': await EnableCron(); break;
     default: console.log('bye!'); process.exit(0);
   }
   return mainMenu('Anything else?');
 }
 
 async function reloadNginx() {
-  console.log(`${chalk.magenta('-')} ${chalk.bold('Reloading nginx...')}`);
-  return new Promise(r => proc.spawn('systemctl', ['restart', 'nginx']).on('close', r));
+  process.stdout.write(`${chalk.magenta('-')} ${chalk.bold('Reloading nginx...')}`);
+  await new Promise(r => proc.spawn('systemctl', ['restart', 'nginx']).on('close', r));
+  console.log(`${chalk.bold.green('Sucess')}`);
 }
 
 async function acmeCmd(args) {
@@ -97,7 +108,7 @@ async function verifyAccount() {
     console.log(`${chalk.magenta('\n-')} ${chalk.bold('Registering account...')}`);
     const exitCode = await acmeCmd(`--force --register-account --server zerossl --eab-kid ${creds['eab-kid']} --eab-hmac-key ${creds['eab-hmac-key']}`);
     console.log('');
-    
+
     if (exitCode !== 0) {
       await new Promise(r => rimraf(`${acmeDir}/ca`, r));
       failFatal('Something appears to have gone wrong :(');
@@ -121,11 +132,11 @@ async function AddSite() {
   process.env['CF_Account_ID'] = opts.cfAcct;
   localState.cfToken = opts.cfToken;
   localState.cfAcct = opts.cfAcct;
-  
+
   console.log(`${chalk.magenta('\n-')} ${chalk.bold('Registering site...')}`);
   const exitCode = await acmeCmd(`--force --issue --dns dns_cf --server zerossl -d ${opts.domain} --fullchainpath ${certsDir}/${opts.domain}.cer --keypath ${certsDir}/${opts.domain}.key`);
   console.log('');
-    
+
   if (exitCode !== 0) {
     failFatal('Something appears to have gone wrong :(');
   }
@@ -138,6 +149,65 @@ async function AddSite() {
   await fs.promises.writeFile(`${nginxDir}/${opts.domain}.conf`, siteEntry);
   await reloadNginx();
   await saveState();
+  sites.push(opts.domain);
+}
+
+async function RemoveSite() {
+  console.log(chalk.bold.gray('\n  Remove site'));
+  const { target } = await inquirer.prompt({
+    message: 'Site: ',
+    name: 'target',
+    type: 'list',
+    choices: [...sites, 'Cancel']
+  });
+
+  if (target.toLowerCase() !== 'cancel') {
+    // nginx
+    process.stdout.write(`${chalk.magenta('-')} ${chalk.bold('Removing nginx config...')}`);
+    await new Promise(r => rimraf(`${nginxDir}/${target}.conf`, r));
+    console.log(`${chalk.bold.green('Sucess')}`);
+
+    // acme
+    process.stdout.write(`${chalk.magenta('-')} ${chalk.bold('Removing acme config...')}`);
+    await new Promise(r => rimraf(`${acmeDir}/${target}`, r));
+    console.log(`${chalk.bold.green('Sucess')}`);
+    sites.splice(sites.indexOf(target), 1);
+  }
+}
+
+
+async function EnableCron() {
+  console.log(chalk.bold.gray('\n  Enable CRON'));
+  const opts = await inquirer.prompt([{
+    message: 'Cron schedule: ',
+    name: 'schedule',
+    type: 'input',
+    default: '0 0 * * *'
+  }, {
+    message: 'Any additional params?',
+    name: 'extra',
+    type: 'input'
+  }, {
+    message: 'This will overwrite all existing cron jobs for the root user. Are you sure?',
+    name: 'confirmation',
+    type: 'list',
+    choices: ['Yes', 'No']
+  }]);
+
+  if (opts.confirmation.toLowerCase() === 'yes') {
+    const nodePath = path.resolve( `${nodeDir}/node`);
+    const scriptPath = path.resolve(__filename);
+
+    process.stdout.write(`${chalk.magenta('-')} ${chalk.bold('Updating CRON...')}`);
+
+    await new Promise(async done => {
+      const cron = proc.spawn('crontab');
+      cron.on('close', done);
+      cron.stdin.write(`${opts.schedule} ${nodePath} ${scriptPath} --cron ${opts.extra}\n`, () => cron.stdin.end());
+    });
+
+    console.log(`${chalk.bold.green('Sucess')}`);
+  }
 }
 
 if (os.userInfo().uid === 0) {
@@ -154,5 +224,5 @@ if (os.userInfo().uid === 0) {
   }
 }
 else {
-  proc.spawn('sudo', ['node', `${__filename}`], { stdio: 'inherit' });
+  proc.spawn('sudo', process.argv, { stdio: 'inherit' });
 }
