@@ -2,8 +2,8 @@ server {
     listen 443 ssl http2;
     listen [::]:443 ssl http2;
     server_name @@DOMAIN;
-    ssl_certificate ./certs/@@DOMAIN.cer;
-    ssl_certificate_key ./certs/@@DOMAIN.key;
+    ssl_certificate ./certs/@@CERT.cer;
+    ssl_certificate_key ./certs/@@CERT.key;
 
     location / {
         allow all;

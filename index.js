@@ -1,3 +1,4 @@
+// Dependencies
 const os = require('os');
 const fs = require('fs');
 const path = require('path');
@@ -6,16 +7,20 @@ const rimraf = require('rimraf');
 const chalk = require('chalk');
 const inquirer = require('inquirer');
 
-const nodeDir = '/usr/bin';
-const nginxDir = '/etc/nginx/sites-enabled';
-const certsDir = '/etc/nginx/certs';
-const acmeDir = '/root/.acme.sh';
+// Config
+const nodeDir = process.env.NODE_DIR || '/usr/bin';
+const nginxDir = process.env.NGINX_DIR || '/etc/nginx/sites-enabled';
+const certsDir = process.env.CERT_DIR || '/etc/nginx/certs';
+const acmeDir = process.env.ACME_DIR || '/root/.acme.sh';
+
+// Global vars
 const localStateFile = path.resolve(__dirname, './localstate.json');
 let localState = {};
 const siteTemplateFile = path.resolve(__dirname, './site-template.txt');
 let siteTemplate = '';
 const sites = [];
 
+// Convenience methods
 const failFatal = msg => {
   console.log(`${chalk.red('#')} ${chalk.bold(msg)}`);
   process.exit(1);
@@ -23,8 +28,9 @@ const failFatal = msg => {
 
 const saveState = () => fs.promises.writeFile(localStateFile, JSON.stringify(localState));
 
+// Async begin
 async function run() {
-  console.log(chalk.bgRed.white('### Proxio ###\n'));
+  console.log(chalk.black(`\n${chalk.bgBlue('/')}${chalk.bgMagenta('/')}${chalk.bgRed('/')}${chalk.bgWhite(' Proxio ')}${chalk.bgRed('/')}${chalk.bgMagenta('/')}${chalk.bgBlue('/')}\n`));
 
   // Check for headless mode
   if (process.argv.indexOf('--cron') >= 0) {
@@ -117,11 +123,13 @@ async function verifyAccount() {
 }
 
 async function AddSite() {
+  let exitCode = 0;
   await verifyAccount();
 
   console.log(chalk.bold.gray('\n  New site'));
   const opts = await inquirer.prompt([
     { message: 'Domain name:', name: 'domain', type: 'input' },
+    { message: 'Cert name:', name: 'cert', type: 'input', default: x => x.domain },
     { message: 'Cloudflare token:', name: 'cfToken', type: 'input', default: localState.cfToken },
     { message: 'Cloudflare account ID:', name: 'cfAcct', type: 'input', default: localState.cfAcct },
     { message: 'Internal IP:', name: 'proxyIp', type: 'input' },
@@ -133,20 +141,29 @@ async function AddSite() {
   localState.cfToken = opts.cfToken;
   localState.cfAcct = opts.cfAcct;
 
-  console.log(`${chalk.magenta('\n-')} ${chalk.bold('Registering site...')}`);
-  const exitCode = await acmeCmd(`--force --issue --dns dns_cf --server zerossl -d ${opts.domain} --fullchainpath ${certsDir}/${opts.domain}.cer --keypath ${certsDir}/${opts.domain}.key`);
-  console.log('');
+  if (!fs.existsSync(`${certsDir}/${opts.cert}.cer`) || !fs.existsSync(`${certsDir}/${opts.cert}.key`)) {
+    console.log(`${chalk.magenta('\n-')} ${chalk.bold('Registering site...')}`);
+    exitCode = await acmeCmd(`--force --issue --dns dns_cf --server zerossl -d ${opts.cert} --fullchainpath ${certsDir}/${opts.cert}.cer --keypath ${certsDir}/${opts.cert}.key`);
+  }
+  else {
+    console.log(`${chalk.gray('\n-')} ${chalk.bold('Registration not required')}`);
+  }
 
   if (exitCode !== 0) {
     failFatal('Something appears to have gone wrong :(');
   }
 
+  process.stdout.write(`${chalk.magenta('-')} ${chalk.bold('Saving configuration...')}`);
+
   const siteEntry = siteTemplate
     .replace(/@@DOMAIN/g, opts.domain)
+    .replace(/@@CERT/g, opts.cert)
     .replace(/@@IP/g, opts.proxyIp)
     .replace(/@@PORT/g, opts.proxyPort);
 
   await fs.promises.writeFile(`${nginxDir}/${opts.domain}.conf`, siteEntry);
+  console.log(`${chalk.bold.green('Done')}`);
+
   await reloadNginx();
   await saveState();
   sites.push(opts.domain);
@@ -174,7 +191,6 @@ async function RemoveSite() {
     sites.splice(sites.indexOf(target), 1);
   }
 }
-
 
 async function EnableCron() {
   console.log(chalk.bold.gray('\n  Enable CRON'));
@@ -210,6 +226,7 @@ async function EnableCron() {
   }
 }
 
+// Install/setup
 if (os.userInfo().uid === 0) {
   if (fs.existsSync(nginxDir)) {
     if (fs.existsSync(acmeDir)) {
