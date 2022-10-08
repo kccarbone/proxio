@@ -2,12 +2,30 @@
 
 printf '\033[44;97m[ Proxio Setup ]\033[0m\n'
 
-if [ "$1" == '' ]
+## Install dependencies
+if ! type curl > /dev/null 2>&1;
+then
+  sudo apt install -y curl
+fi
+
+if ! type unzip > /dev/null 2>&1;
+then
+  sudo apt install -y unzip
+fi
+
+## Download proxio
+if [ "$1" == '' ] && [ ! -d ./proxio ]
 then 
   printf '\033[0;36m\nDownloading proxio\033[0m\n'
-  GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=accept-new" git clone git@github.com:kccarbone/proxio.git
-  cd proxio
+  rm -rf ./proxio.zip
+  curl -L -o proxio.zip https://github.com/kccarbone/proxio/zipball/master/
+
+  printf '\n'
+  unzip proxio.zip
+  mv $(find . -type d -name "kccarbone-proxio*" -print -quit) proxio
 fi
+
+cd proxio
 
 ## Node
 printf '\033[0;36m\nChecking Node\033[0m\n'
@@ -67,7 +85,7 @@ then
   source ~/.bash_profile
 fi
 
-printf '\033[0;32m\nDone!\033[0m Run \033[0;95mproxio\033[0m to get started (after reload)\n'
+printf '\033[0;32m\nDone!\033[0m Run \033[0;95mproxio\033[0m to get started\n'
 
 if [ "$1" == '' ]
 then 

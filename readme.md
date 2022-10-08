@@ -6,5 +6,5 @@ A simple reverse-proxy utility for testing domains locally.
 
 So far only tested on RaspiOS "Bullseye"
 ```
-curl -fsSL https://raw.githubusercontent.com/kccarbone/proxio/main/install.sh | bash
+source <(curl -fsSL https://raw.githubusercontent.com/kccarbone/proxio/main/install.sh)
 ```
